@@ -8,9 +8,8 @@ from typing import Callable
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from quatrex.core.config import DeviceConfig, parse_config, setup_context
 
-from quatrex.core.config import parse_config, setup_context
+from quatrex.core.config import DeviceConfig, parse_config, setup_context
 
 
 def test_parse_config(example: tuple[Path, bool]):
@@ -53,6 +52,8 @@ def test_setup_context_dist(
     # NOTE: this is expected to fail if the comm size is not a multiple
     # of the comm block size
     setup_context(config)
+
+
 def test_device_nspin_default():
     assert DeviceConfig.model_fields["nspin"].default == 1
 
