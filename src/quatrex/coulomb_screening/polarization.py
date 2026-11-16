@@ -95,7 +95,11 @@ class PCoulombScreening(ScatteringSelfEnergy):
 
     @profiler.profile(label="PCoulombScreening", level="default", comm=comm)
     def compute(
-        self, g_lesser: DSDBSparse, g_greater: DSDBSparse, out: tuple[DSDBSparse, ...]
+        self,
+        g_lesser: DSDBSparse,
+        g_greater: DSDBSparse,
+        out: tuple[DSDBSparse, ...],
+        accumulate: bool = False,
     ) -> None:
         """Computes the polarization.
 
@@ -123,7 +127,7 @@ class PCoulombScreening(ScatteringSelfEnergy):
                 m.dtranspose() if m.distribution_state != "nnz" else None
             for m in (p_lesser, p_greater):
                 # These only need the correct shape, so discard the data.
-                m.dtranspose(discard=True) if m.distribution_state != "nnz" else None
+                m.dtranspose(discard=not accumulate) if m.distribution_state != "nnz" else None
             if self.include_energy_renormalization:
                 (
                     p_retarded_hermitian.dtranspose(discard=True)
@@ -186,8 +190,13 @@ class PCoulombScreening(ScatteringSelfEnergy):
                     # data. This is a workaround.
                     # Fill the matrices with the data. Take second part of the
                     # energy convolution.
-                    p_lesser.data[..., batch] = p_l_full[self.ne - 1 :]
-                    p_greater.data[..., batch] = p_g_full[self.ne - 1 :]
+                    if accumulate:
+                        # Add this spin channel to the sum over spins.
+                        p_lesser.data[..., batch] += p_l_full[self.ne - 1 :]
+                        p_greater.data[..., batch] += p_g_full[self.ne - 1 :]
+                    else:
+                        p_lesser.data[..., batch] = p_l_full[self.ne - 1 :]
+                        p_greater.data[..., batch] = p_g_full[self.ne - 1 :]
                     # Note that only the hermitian part is computed here.
 
                     if self.include_energy_renormalization:
