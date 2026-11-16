@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
+from quatrex.core.config import DeviceConfig, parse_config, setup_context
 
 from quatrex.core.config import parse_config, setup_context
 
@@ -51,3 +53,19 @@ def test_setup_context_dist(
     # NOTE: this is expected to fail if the comm size is not a multiple
     # of the comm block size
     setup_context(config)
+def test_device_nspin_default():
+    assert DeviceConfig.model_fields["nspin"].default == 1
+
+
+def test_device_nspin_valid_values():
+    adapter = TypeAdapter(DeviceConfig.model_fields["nspin"].annotation)
+
+    assert adapter.validate_python(1) == 1
+    assert adapter.validate_python(2) == 2
+
+
+def test_device_nspin_invalid_value():
+    adapter = TypeAdapter(DeviceConfig.model_fields["nspin"].annotation)
+
+    with pytest.raises(ValidationError):
+        adapter.validate_python(3)

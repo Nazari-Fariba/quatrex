@@ -1601,7 +1601,12 @@ class DeviceConfig(BaseModel):
     """Configuration for the simulated device."""
 
     model_config = ConfigDict(extra="forbid")
+    nspin: Literal[1, 2] = 1
+    """Number of spin components in the electronic matrix representation.
 
+    1: Existing single-component representation.
+    2: Collinear spin-up and spin-down representation.
+    """
     construct_from_unit_cell: bool = False
     """Whether to construct a device from its unit cell geometry and
     electronic structure.
