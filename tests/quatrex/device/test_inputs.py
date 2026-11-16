@@ -208,3 +208,33 @@ def test_expand_tight_binding_matrix(
                         assert xp.allclose(
                             h_upper[block_slice][row_unit_slice, col_unit_slice], 1
                         )
+from types import SimpleNamespace
+
+from quatrex.device.inputs import _matrix_file_stem
+
+
+def _stub(nspin, tmp_path):
+    return SimpleNamespace(device=SimpleNamespace(nspin=nspin), input_dir=tmp_path)
+
+
+def test_matrix_file_stem_nspin1(tmp_path):
+    cfg = _stub(1, tmp_path)
+    assert _matrix_file_stem(cfg, "hamiltonian", None) == "hamiltonian"
+    assert _matrix_file_stem(cfg, "hamiltonian", 1) == "hamiltonian"
+
+
+def test_matrix_file_stem_nspin2(tmp_path):
+    cfg = _stub(2, tmp_path)
+    (tmp_path / "hamiltonian_up.h5").touch()
+    (tmp_path / "hamiltonian_down.h5").touch()
+    assert _matrix_file_stem(cfg, "hamiltonian", 0) == "hamiltonian_up"
+    assert _matrix_file_stem(cfg, "hamiltonian", 1) == "hamiltonian_down"
+    # The overlap falls back to the shared file.
+    assert _matrix_file_stem(cfg, "overlap", 1) == "overlap"
+    (tmp_path / "overlap_down.h5").touch()
+    assert _matrix_file_stem(cfg, "overlap", 1) == "overlap_down"
+
+
+def test_matrix_file_stem_missing_hamiltonian(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        _matrix_file_stem(_stub(2, tmp_path), "hamiltonian", 0)
