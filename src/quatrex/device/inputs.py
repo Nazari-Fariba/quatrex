@@ -412,10 +412,29 @@ def _create_matrix_from_unit_cells(
     return out_matrix_dict
 
 
+def _matrix_file_stem(config: QuatrexConfig, matrix_name: str, spin: int | None) -> str:
+    """Returns the input file stem, e.g. 'hamiltonian_up' for nspin=2.
+
+    For nspin=1 (or spin=None) the name is unchanged. The overlap falls
+    back to the shared 'overlap.h5' if no per-spin file exists.
+    """
+    if config.device.nspin == 1 or spin is None:
+        return matrix_name
+    if matrix_name not in ("hamiltonian", "overlap"):
+        return matrix_name
+    stem = f"{matrix_name}_{'up' if spin == 0 else 'down'}"
+    if (config.input_dir / f"{stem}.h5").exists():
+        return stem
+    if matrix_name == "overlap":
+        return matrix_name
+    raise FileNotFoundError(f"{stem}.h5 is required for nspin=2.")
+
+
 def load_matrices(
     config: QuatrexConfig,
     matrix_name: str,
     force_complex: bool = True,
+    spin: int | None = None,
 ):
     """Loads a Hermitian matrix from file
 
@@ -438,7 +457,9 @@ def load_matrices(
     """
 
     # load the matrices
-    matrix_dict = distributed_load(config.input_dir / f"{matrix_name}.h5")
+    matrix_dict = distributed_load(
+        config.input_dir / f"{_matrix_file_stem(config, matrix_name, spin)}.h5"
+    )
 
     if (0, 0, 0) not in matrix_dict:
         raise ValueError(
@@ -560,6 +581,7 @@ def assemble_matrix(
     matrix_name: str,
     sparsity_pattern: sparse.coo_matrix | None = None,
     shift_kpoints: bool = False,
+    spin: int | None = None,
 ) -> tuple[DSDBSparse, sparse.coo_matrix]:
     """Loads a Hermitian matrix from file and optionally
     applies a provided sparsity pattern.
@@ -586,7 +608,7 @@ def assemble_matrix(
 
     """
 
-    matrix_dict = load_matrices(config, matrix_name)
+    matrix_dict = load_matrices(config, matrix_name, spin=spin)
 
     # load or construct the block sizes for the DSDBSparse
     if config.device.construct_from_unit_cell:
