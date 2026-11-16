@@ -55,9 +55,15 @@ class SCBADevice(BaseDevice):
 
     def __init__(self, config: QuatrexConfig) -> None:
         super().__init__(config)
-        self.hamiltonians, self.overlap_matrices, hamiltonian_sparsity_pattern = (
-            self._init_hamiltonian()
-        )
+        (
+            self.hamiltonians_spin,
+            self.overlap_spin,
+            hamiltonian_sparsity_pattern,
+        ) = self._init_hamiltonian()
+        # NOTE: Spin 0 stays the default so that all spin-unaware code
+        # (and the nspin=1 path) is unchanged.
+        self.hamiltonians = self.hamiltonians_spin[0]
+        self.overlap_matrices = self.overlap_spin[0]
         self.block_sizes = self.hamiltonians.block_sizes
 
         self._allocate_sparsity_pattern()
@@ -109,41 +115,85 @@ class SCBADevice(BaseDevice):
 
     def _init_hamiltonian(
         self,
-    ) -> tuple[DSDBSparse, DSDBSparse | None, sparse.coo_matrix]:
-        """Initializes Hamiltonian and overlap matrices from files."""
+    ) -> tuple[list[DSDBSparse], list[DSDBSparse | None], sparse.coo_matrix]:
+        """Initializes Hamiltonian and overlap matrices from files.
 
-        # Load the device Hamiltonian.
-        hamiltonians, hamiltonian_sparsity_pattern = assemble_matrix(
-            config=self.config,
-            matrix_name="hamiltonian",
-            sparsity_pattern=None,
-            shift_kpoints=False,
-        )
+        Returns one Hamiltonian and one overlap (or None) per spin
+        channel. For nspin=1 the lists have length one.
+        """
+        nspin = self.config.device.nspin
+        spins = [None] if nspin == 1 else list(range(nspin))
 
-        try:
-            # Attempt to load the device overlap matrix.
-            overlap_matrices, __ = assemble_matrix(
+        # For several spins, use the union of the sparsity patterns so
+        # that all channels share one pattern.
+        pattern = None
+        if nspin > 1:
+            patterns = []
+            for spin in spins:
+                __, pat = assemble_matrix(
+                    config=self.config,
+                    matrix_name="hamiltonian",
+                    sparsity_pattern=None,
+                    shift_kpoints=False,
+                    spin=spin,
+                )
+                patterns.append(pat)
+            pattern = patterns[0]
+            for pat in patterns[1:]:
+                pattern = pattern + pat
+            pattern = pattern.tocoo()
+            pattern.data[:] = 1
+
+        hamiltonians = []
+        overlaps = []
+        hamiltonian_sparsity_pattern = None
+        for spin in spins:
+            hamiltonian, hamiltonian_sparsity_pattern = assemble_matrix(
                 config=self.config,
-                matrix_name="overlap",
-                sparsity_pattern=None,
+                matrix_name="hamiltonian",
+                sparsity_pattern=pattern,
                 shift_kpoints=False,
+                spin=spin,
             )
+            hamiltonians.append(hamiltonian)
 
-            # Check that the overlap matrix and Hamiltonian matrix match.
-            if overlap_matrices.shape != hamiltonians.shape:
-                raise ValueError(
-                    "Overlap matrix and Hamiltonian matrix have different shapes."
+            try:
+                # Attempt to load the device overlap matrix.
+                overlap, __ = assemble_matrix(
+                    config=self.config,
+                    matrix_name="overlap",
+                    sparsity_pattern=pattern,
+                    shift_kpoints=False,
+                    spin=spin,
                 )
 
-            if comm.rank == 0:
-                print("Non-orthogonal basis detected.", flush=True)
+                # Check that the overlap matrix and Hamiltonian match.
+                if overlap.shape != hamiltonian.shape:
+                    raise ValueError(
+                        "Overlap matrix and Hamiltonian matrix have different shapes."
+                    )
 
-        except FileNotFoundError:
-            overlap_matrices = None
-            if comm.rank == 0:
-                print("No overlap matrix found. Assuming orthogonal basis.", flush=True)
+                if comm.rank == 0 and spin in (None, 0):
+                    print("Non-orthogonal basis detected.", flush=True)
 
-        return hamiltonians, overlap_matrices, hamiltonian_sparsity_pattern
+            except FileNotFoundError:
+                overlap = None
+                if comm.rank == 0 and spin in (None, 0):
+                    print(
+                        "No overlap matrix found. Assuming orthogonal basis.",
+                        flush=True,
+                    )
+            overlaps.append(overlap)
+
+        if nspin > 1:
+            for h in hamiltonians[1:]:
+                if h.shape != hamiltonians[0].shape or not np.array_equal(
+                    h.block_sizes, hamiltonians[0].block_sizes
+                ):
+                    raise ValueError("Spin channels must have identical shapes.")
+            hamiltonian_sparsity_pattern = pattern
+
+        return hamiltonians, overlaps, hamiltonian_sparsity_pattern
 
     @profiler.profile("Device: Sparsity Pattern", level="default", comm=comm)
     def _allocate_sparsity_pattern(self):
