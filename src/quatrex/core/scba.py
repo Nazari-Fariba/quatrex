@@ -17,6 +17,7 @@ from qttools.utils.mpi_utils import distributed_load
 from quatrex.core.config import QuatrexConfig
 from quatrex.core.observables import current_conservation, density
 from quatrex.core.transport import TransportSolver
+from quatrex.core.utils import spin_degeneracy
 from quatrex.coulomb_screening import CoulombScreeningSolver, PCoulombScreening
 from quatrex.device import BaseDevice, SCBADevice
 from quatrex.device.inputs import get_block_sizes
@@ -206,6 +207,10 @@ class SCBA(TransportSolver):
 
         self.device = device
         self.observables = Observables()
+        if config.device.nspin > 1 and config.scba.coulomb_screening:
+            raise NotImplementedError(
+                "Coulomb screening is not yet implemented for nspin > 1."
+            )
         electron_energies = xp.zeros((comm.size,))
         self.data = SCBAData(
             config=config,
@@ -236,11 +241,18 @@ class SCBA(TransportSolver):
                 f"Each comm.block has {num_energies_per_rank} grid points.", flush=True
             )
 
-        self.electron_solver = ElectronSolver(
-            config=self.config,
-            device=self.device,
-            energies=self.electron_energies,
-        )
+        # One solver per spin channel (each keeps its own state).
+        self.electron_solvers = []
+        for spin in range(config.device.nspin):
+            with self.device.use_spin(spin):
+                self.electron_solvers.append(
+                    ElectronSolver(
+                        config=self.config,
+                        device=self.device,
+                        energies=self.electron_energies,
+                    )
+                )
+        self.electron_solver = self.electron_solvers[0]
 
         # ----- Coulomb screening --------------------------------------
         if self.config.scba.coulomb_screening:
@@ -307,11 +319,16 @@ class SCBA(TransportSolver):
             elif self.config.phonon.model == "pseudo-scattering":
                 self.sigma_phonon = SigmaPhonon(config, self.electron_energies)
 
-        self.data = SCBAData(
-            config=config,
-            device=self.device,
-            electron_energies=self.electron_energies,
-        )  # real data
+        self.data_spin = [
+            SCBAData(
+                config=config,
+                device=self.device,
+                electron_energies=self.electron_energies,
+            )
+            for __ in range(config.device.nspin)
+        ]  # real data
+        self.data = self.data_spin[0]
+        self.observables_spin = []
 
     def _stash_sigma(self) -> None:
         """Stash the current into the previous self-energy buffers."""
@@ -488,19 +505,25 @@ class SCBA(TransportSolver):
                 self.data.g_retarded,
                 self.device.overlap_matrices,
             ) / (2 * xp.pi)
-            self.observables.electron_ldos *= 2  # Spin
+            self.observables.electron_ldos *= spin_degeneracy(
+                self.config.device.nspin
+            )
         if self.config.outputs.electron_density:
             self.observables.electron_density = density(
                 self.data.g_lesser,
                 self.device.overlap_matrices,
             ) / (2 * xp.pi)
-            self.observables.electron_density *= 2  # Spin
+            self.observables.electron_density *= spin_degeneracy(
+                self.config.device.nspin
+            )
         if self.config.outputs.hole_density:
             self.observables.hole_density = -density(
                 self.data.g_greater,
                 self.device.overlap_matrices,
             ) / (2 * xp.pi)
-            self.observables.hole_density *= 2  # Spin
+            self.observables.hole_density *= spin_degeneracy(
+                self.config.device.nspin
+            )
 
         if self.config.outputs.device_currents:
             self.observables.electron_current["device"] = comm.stack.all_gather_v(
@@ -669,7 +692,8 @@ class SCBA(TransportSolver):
         if potential.shape[0] != np.sum(self.data.orbitals_per_atom):
             potential = np.repeat(potential, self.data.orbitals_per_atom)
 
-        self.electron_solver.potential = potential
+        for solver in self.electron_solvers:
+            solver.potential = potential
 
     def get_charge_density(self) -> NDArray:
         """Gets the charge density.
@@ -694,7 +718,24 @@ class SCBA(TransportSolver):
 
     @profiler.profile(label="SCBA", level="default", comm=comm)
     def run(self) -> None:
-        """Runs the SCBA to convergence."""
+        """Runs the SCBA to convergence, once per spin channel."""
+        nspin = self.config.device.nspin
+        if nspin == 1:
+            self._run_single()
+            return
+
+        self.observables_spin = []
+        for spin in range(nspin):
+            self.data = self.data_spin[spin]
+            self.electron_solver = self.electron_solvers[spin]
+            self.observables = Observables()
+            with self.device.use_spin(spin):
+                self._run_single()
+            self.observables_spin.append(self.observables)
+
+    @profiler.profile(label="SCBA: channel", level="default", comm=comm)
+    def _run_single(self) -> None:
+        """Runs the SCBA for the currently selected spin channel."""
         print("Entering SCBA loop...", flush=True) if comm.rank == 0 else None
 
         for i in range(self.config.scba.max_iterations):
