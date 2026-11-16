@@ -215,6 +215,18 @@ class SCBAContact(BaseContact):
             config.electron.obc,
             config.compute.nevp,
         )
+        # One OBC solver (and memoizer) per spin channel. Spin 0 is the
+        # default solver, so nspin=1 is unchanged.
+        self.electron_obc_spin = [self.obc_solvers["electron"]] + [
+            self._configure_obc(config.electron.obc, config.compute.nevp)
+            for __ in range(1, config.device.nspin)
+        ]
+        # One OBC solver (and memoizer) per spin channel. Spin 0 is the
+        # default solver, so nspin=1 is unchanged.
+        self.electron_obc_spin = [self.obc_solvers["electron"]] + [
+            self._configure_obc(config.electron.obc, config.compute.nevp)
+            for __ in range(1, config.device.nspin)
+        ]
 
         if config.scba.coulomb_screening:
             self.obc_solvers["coulomb_screening"] = self._configure_obc(

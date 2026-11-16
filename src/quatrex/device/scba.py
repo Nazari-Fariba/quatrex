@@ -87,15 +87,19 @@ class SCBADevice(BaseDevice):
     def use_spin(self, spin: int):
         """Temporarily selects the Hamiltonian/overlap of a spin channel."""
         previous = self.spin
-        self.spin = spin
-        self.hamiltonians = self.hamiltonians_spin[spin]
-        self.overlap_matrices = self.overlap_spin[spin]
+        self._select_spin(spin)
         try:
             yield self
         finally:
-            self.spin = previous
-            self.hamiltonians = self.hamiltonians_spin[previous]
-            self.overlap_matrices = self.overlap_spin[previous]
+            self._select_spin(previous)
+
+    def _select_spin(self, spin: int):
+        """Points the spin-dependent attributes at the given channel."""
+        self.spin = spin
+        self.hamiltonians = self.hamiltonians_spin[spin]
+        self.overlap_matrices = self.overlap_spin[spin]
+        for contact in getattr(self, "contacts", []):
+            contact.obc_solvers["electron"] = contact.electron_obc_spin[spin]
 
     def _add_contacts(self, hamiltonian_sparsity_pattern: sparse.coo_matrix):
         """Initializes and attaches contacts to the device.
