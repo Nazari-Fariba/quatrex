@@ -723,6 +723,7 @@ class SCBA(TransportSolver):
 
         if self.config.scba.coulomb_screening:
             self._run_coupled()
+            self._write_spin_totals()
             return
 
         self.observables_spin = []
@@ -733,6 +734,7 @@ class SCBA(TransportSolver):
             with self.device.use_spin(spin):
                 self._run_single()
             self.observables_spin.append(self.observables)
+        self._write_spin_totals()
 
     @contextmanager
     def _channel(self, spin: int):
@@ -900,6 +902,35 @@ class SCBA(TransportSolver):
         else:  # Did not break, i.e. max_iterations reached.
             if comm.rank == 0:
                 print(f"SCBA did not converge after {i} iterations.")
+
+    def _write_spin_totals(self) -> None:
+        """Writes per-spin and spin-summed observables (rank 0 only).
+
+        Densities and the LDOS already carry spin_degeneracy = 1 for
+        nspin > 1, so the total is the plain sum over the channels.
+        """
+        if comm.rank != 0 or not self.observables_spin:
+            return
+        if not os.path.exists(self.config.output_dir):
+            os.mkdir(self.config.output_dir)
+        out = self.config.output_dir
+
+        for name in ("electron_ldos", "electron_density", "hole_density"):
+            values = [getattr(o, name) for o in self.observables_spin]
+            if any(v is None for v in values):
+                continue
+            for spin, value in enumerate(values):
+                xp.save(out / f"{name}_spin{spin}.npy", value)
+            xp.save(out / f"{name}_total.npy", sum(values))
+
+        for kind in ("device", "meir-wingreen"):
+            values = [o.electron_current.get(kind) for o in self.observables_spin]
+            if any(v is None for v in values):
+                continue
+            tag = kind.replace("-", "_")
+            for spin, value in enumerate(values):
+                xp.save(out / f"current_{tag}_spin{spin}.npy", value)
+            xp.save(out / f"current_{tag}_total.npy", sum(values))
 
     @profiler.profile(label="SCBA: channel", level="default", comm=comm)
     def _run_single(self) -> None:
