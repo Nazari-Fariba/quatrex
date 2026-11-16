@@ -129,3 +129,7 @@ def compute_num_connected_blocks(
         return 2
 
     return 3
+
+def spin_degeneracy(nspin: int) -> int:
+    """Spin degeneracy of one explicitly treated channel (2 if spin is implicit)."""
+    return 2 if nspin == 1 else 1
