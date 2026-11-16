@@ -12,6 +12,8 @@ from qttools.profiling import Profiler
 from qttools.utils.gpu_utils import free_mempool
 from qttools.utils.mpi_utils import get_section_sizes
 from quatrex.core.config import QuatrexConfig
+from quatrex.core.utils import spin_degeneracy
+from quatrex.core.utils import spin_degeneracy
 from quatrex.core.sse import ScatteringSelfEnergy
 
 profiler = Profiler()
@@ -77,8 +79,7 @@ class PCoulombScreening(ScatteringSelfEnergy):
         self.kpoint_volume = np.prod(config.device.kpoint_grid)
         self.ne = len(self.energies)
         self.prefactor = (
-            -1j
-            / (xp.pi)
+            -1j / (xp.pi) * (spin_degeneracy(config.device.nspin) / 2)
             * xp.abs(self.energies[1] - self.energies[0])
             / self.kpoint_volume
         )
