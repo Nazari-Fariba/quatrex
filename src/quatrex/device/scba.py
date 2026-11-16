@@ -2,6 +2,8 @@
 
 """Includes the SCBA device class for electronic transport calculations."""
 
+from contextlib import contextmanager
+
 import numpy as np
 
 from qttools import NDArray, sparse
@@ -62,6 +64,7 @@ class SCBADevice(BaseDevice):
         ) = self._init_hamiltonian()
         # NOTE: Spin 0 stays the default so that all spin-unaware code
         # (and the nspin=1 path) is unchanged.
+        self.spin = 0
         self.hamiltonians = self.hamiltonians_spin[0]
         self.overlap_matrices = self.overlap_spin[0]
         self.block_sizes = self.hamiltonians.block_sizes
@@ -79,6 +82,20 @@ class SCBADevice(BaseDevice):
         # NOTE: Contacts are added at the end since the need parameters
         # from the previous method.
         self._add_contacts(hamiltonian_sparsity_pattern)
+
+    @contextmanager
+    def use_spin(self, spin: int):
+        """Temporarily selects the Hamiltonian/overlap of a spin channel."""
+        previous = self.spin
+        self.spin = spin
+        self.hamiltonians = self.hamiltonians_spin[spin]
+        self.overlap_matrices = self.overlap_spin[spin]
+        try:
+            yield self
+        finally:
+            self.spin = previous
+            self.hamiltonians = self.hamiltonians_spin[previous]
+            self.overlap_matrices = self.overlap_spin[previous]
 
     def _add_contacts(self, hamiltonian_sparsity_pattern: sparse.coo_matrix):
         """Initializes and attaches contacts to the device.
