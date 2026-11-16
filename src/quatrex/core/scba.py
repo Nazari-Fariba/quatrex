@@ -3,6 +3,7 @@
 """Includes the core classes for the self-consistent Born approximation (SCBA) solver."""
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -207,10 +208,6 @@ class SCBA(TransportSolver):
 
         self.device = device
         self.observables = Observables()
-        if config.device.nspin > 1 and config.scba.coulomb_screening:
-            raise NotImplementedError(
-                "Coulomb screening is not yet implemented for nspin > 1."
-            )
         electron_energies = xp.zeros((comm.size,))
         self.data = SCBAData(
             config=config,
@@ -724,6 +721,10 @@ class SCBA(TransportSolver):
             self._run_single()
             return
 
+        if self.config.scba.coulomb_screening:
+            self._run_coupled()
+            return
+
         self.observables_spin = []
         for spin in range(nspin):
             self.data = self.data_spin[spin]
@@ -732,6 +733,173 @@ class SCBA(TransportSolver):
             with self.device.use_spin(spin):
                 self._run_single()
             self.observables_spin.append(self.observables)
+
+    @contextmanager
+    def _channel(self, spin: int):
+        """Selects data, solver, observables and Hamiltonian of one spin."""
+        previous = (self.data, self.electron_solver, self.observables)
+        self.data = self.data_spin[spin]
+        self.electron_solver = self.electron_solvers[spin]
+        self.observables = self.observables_spin[spin]
+        try:
+            with self.device.use_spin(spin):
+                yield
+        finally:
+            self.data, self.electron_solver, self.observables = previous
+
+    def _compute_coulomb_screening_interaction_coupled(self) -> None:
+        """Coulomb screening for several spins.
+
+        P is summed over the spin channels, W is shared, and the
+        self-energy of each spin is computed from its own G and the
+        shared W.
+        """
+        nspin = self.config.device.nspin
+        shared = self.data_spin[0]  # Owns the shared P and W.
+
+        shared.p_greater.allocate_data()
+        shared.p_lesser.allocate_data()
+        shared.p_retarded_hermitian.allocate_data()
+        for spin in range(nspin):
+            data = self.data_spin[spin]
+            self.p_coulomb_screening.compute(
+                data.g_lesser,
+                data.g_greater,
+                out=(shared.p_lesser, shared.p_greater, shared.p_retarded_hermitian),
+                accumulate=spin > 0,
+            )
+
+        shared.w_greater.allocate_data()
+        shared.w_lesser.allocate_data()
+        self.coulomb_screening_solver.solve(
+            shared.p_lesser,
+            shared.p_greater,
+            shared.p_retarded_hermitian,
+            out=(shared.w_lesser, shared.w_greater),
+        )
+
+        with self._channel(0):
+            self._compute_coulomb_screening_observables()
+
+        shared.p_lesser.free_data()
+        shared.p_greater.free_data()
+        shared.p_retarded_hermitian.free_data()
+
+        # NOTE: SigmaCoulombScreening discards W after use, so keep a
+        # copy and restore it before each further spin channel.
+        w_lesser_saved = shared.w_lesser.data.copy()
+        w_greater_saved = shared.w_greater.data.copy()
+        for spin in range(nspin):
+            data = self.data_spin[spin]
+            if spin > 0:
+                shared.w_lesser.data[:] = w_lesser_saved
+                shared.w_greater.data[:] = w_greater_saved
+            self.sigma_fock.compute(
+                data.g_lesser,
+                out=(data.sigma_retarded_hermitian,),
+            )
+            self.sigma_coulomb_screening.compute(
+                data.g_lesser,
+                data.g_greater,
+                shared.w_lesser,
+                shared.w_greater,
+                out=(
+                    data.sigma_lesser,
+                    data.sigma_greater,
+                    data.sigma_retarded_hermitian,
+                ),
+            )
+
+        shared.w_greater.free_data()
+        shared.w_lesser.free_data()
+
+    @profiler.profile(label="SCBA: coupled", level="default", comm=comm)
+    def _run_coupled(self) -> None:
+        """Runs the SCBA with all spin channels coupled through W."""
+        nspin = self.config.device.nspin
+        self.observables_spin = [Observables() for __ in range(nspin)]
+        print("Entering coupled SCBA loop...", flush=True) if comm.rank == 0 else None
+
+        for i in range(self.config.scba.max_iterations):
+            print(f"Iteration {i}", flush=True) if comm.rank == 0 else None
+
+            with profiler.profile_range(
+                label="SCBA: Iteration", level="default", comm=comm
+            ):
+                for spin in range(nspin):
+                    with self._channel(spin):
+                        self.data.g_retarded.allocate_data()
+                        self.data.g_retarded.data = 0.0
+                        self.electron_solver.solve(
+                            self.data.sigma_lesser,
+                            self.data.sigma_greater,
+                            self.data.sigma_retarded_hermitian,
+                            out=(
+                                self.data.g_lesser,
+                                self.data.g_greater,
+                                self.data.g_retarded,
+                            ),
+                        )
+                        self._compute_electron_observables()
+                        self.data.g_retarded.free_data()
+                        self._stash_sigma()
+                        for m in (self.data.g_lesser, self.data.g_greater):
+                            m.dtranspose(discard=False)
+                            assert m.distribution_state == "nnz"
+                        for m in (
+                            self.data.sigma_lesser,
+                            self.data.sigma_greater,
+                            self.data.sigma_retarded_hermitian,
+                        ):
+                            m.dtranspose(discard=True)
+                            assert m.distribution_state == "nnz"
+
+                self._compute_coulomb_screening_interaction_coupled()
+
+                if self.config.scba.photon:
+                    self._compute_photon_interaction()
+
+                if self.config.scba.phonon:
+                    for spin in range(nspin):
+                        with self._channel(spin):
+                            self._compute_phonon_interaction()
+
+                for spin in range(nspin):
+                    with self._channel(spin):
+                        for m in (self.data.g_lesser, self.data.g_greater):
+                            m.dtranspose(discard=True)
+                            assert m.distribution_state == "stack"
+                        for m in (
+                            self.data.sigma_lesser,
+                            self.data.sigma_greater,
+                            self.data.sigma_retarded_hermitian,
+                        ):
+                            m.dtranspose(discard=False)
+                            assert m.distribution_state == "stack"
+
+            converged = True
+            for spin in range(nspin):
+                with self._channel(spin):
+                    self._symmetrize_sigma()
+                    converged = self._has_converged() and converged
+
+            if converged:
+                if comm.rank == 0:
+                    print(f"SCBA converged after {i} iterations.", flush=True)
+                break
+
+            for spin in range(nspin):
+                with self._channel(spin):
+                    self._update_sigma()
+
+            if i % self.config.scba.output_interval == 0:
+                # NOTE: Only the spin-0 outputs are written for now.
+                with self._channel(0):
+                    self._write_iteration_outputs(i)
+
+        else:  # Did not break, i.e. max_iterations reached.
+            if comm.rank == 0:
+                print(f"SCBA did not converge after {i} iterations.")
 
     @profiler.profile(label="SCBA: channel", level="default", comm=comm)
     def _run_single(self) -> None:
