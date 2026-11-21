@@ -1102,6 +1102,10 @@ class QTBM(TransportSolver):
             kpoint_ind,
         )
 
+    def _spin_factor(self) -> int:
+        """Spin degeneracy: 1 if the basis already contains the spin, else 2."""
+        return 1 if self.config.device.spinor_basis else 2
+
     def _compute_current(self):
         """Computes the electron current from the transmission data."""
 
@@ -1131,7 +1135,7 @@ class QTBM(TransportSolver):
                     )
                 )
                 / self.device.num_kpoints
-                * (2 * e / h)
+                * (self._spin_factor() * e / h)
             )
 
         return contact_currents
@@ -1222,8 +1226,8 @@ class QTBM(TransportSolver):
                 contact.temperature,
             )
 
-            electron_density += occupancy * ldos.mean(axis=0) * 2  # Spin
-            hole_density += (1 - occupancy) * ldos.mean(axis=0) * 2  # Spin
+            electron_density += occupancy * ldos.mean(axis=0) * self._spin_factor()
+            hole_density += (1 - occupancy) * ldos.mean(axis=0) * self._spin_factor()
 
         # Find the reference contact mid-gap energy to separate
         # electrons and holes.

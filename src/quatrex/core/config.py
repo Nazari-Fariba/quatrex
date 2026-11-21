@@ -1601,6 +1601,13 @@ class DeviceConfig(BaseModel):
     """Configuration for the simulated device."""
 
     model_config = ConfigDict(extra="forbid")
+    spinor_basis: bool = False
+    """Whether the orbital basis already contains the spin (two spin
+    components per orbital, e.g. a non-collinear Hamiltonian).
+
+    If true, the spin degeneracy factor 2 is not applied to the current
+    and densities of the QTBM solver.
+    """
 
     construct_from_unit_cell: bool = False
     """Whether to construct a device from its unit cell geometry and

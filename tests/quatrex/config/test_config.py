@@ -51,3 +51,15 @@ def test_setup_context_dist(
     # NOTE: this is expected to fail if the comm size is not a multiple
     # of the comm block size
     setup_context(config)
+
+
+def test_device_spinor_basis_default():
+    from quatrex.core.config import DeviceConfig
+
+    assert DeviceConfig.model_fields["spinor_basis"].default is False
+
+
+def test_device_spinor_basis_default():
+    from quatrex.core.config import DeviceConfig
+
+    assert DeviceConfig.model_fields["spinor_basis"].default is False
